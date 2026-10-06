@@ -1,0 +1,32 @@
+# config.yaml
+plc:
+  ip: "192.168.0.1"  
+  rack: 0
+  slot: 1
+  db_number: 15
+
+experiment:
+  # configuration
+  temp_high: 20.0
+  temp_low:  -40.0
+  cycles: 2
+  idle_warm_min: 10
+  idle_cold_min: 10
+  # safty
+  temp_high_limit: 30.0
+  temp_low_limit: -50.0
+
+execution:
+  dry_run: true      
+
+database:
+  DB_HOST: "192.168.x.x"
+  DB_PORT: 5432
+  DB_USER: TIDC_B205
+  DB_NAME: PLC_COLLECT
+  DB_PASSWORD: "YOUR_DB_PASSWORD"
+
+mqtt:
+  MQTT_BROKER: "192.168.x.x"
+  MQTT_PORT: 1883
+  MQTT_TOPIC: plc/s7-1200/temperature

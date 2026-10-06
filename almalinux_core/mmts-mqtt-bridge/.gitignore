@@ -1,0 +1,43 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Configuration & Secrets (CRITICAL)
+gateway_setting.yml
+*.secret.yml
+*.local.yml
+.env
+*.env
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test & coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Log files
+*.log

@@ -1,0 +1,29 @@
+# version: '3.9'
+
+services:
+  db:
+    image: postgres
+    container_name: tidc_b205_postgres
+    restart: always
+    shm_size: 128mb
+    volumes:
+      - tidc_b205_db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-TIDC_B205}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-PLC_COLLECT}
+      TZ: ${TIMEZONE:-Asia/Taipei}
+    ports:
+      - 5432:5432
+
+  adminer:
+    image: adminer
+    container_name: tidc_b205_adminer
+    restart: always
+    ports:
+      - 8080:8080
+    depends_on:
+      - db
+
+volumes:
+  tidc_b205_db:

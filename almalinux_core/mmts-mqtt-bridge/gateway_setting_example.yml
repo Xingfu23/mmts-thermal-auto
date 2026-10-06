@@ -1,0 +1,19 @@
+database:
+  DB_HOST: "192.168.x.x"        # PLC telemetry database host IP or hostname
+  DB_PORT: 5432
+  DB_USER: "your_plc_db_user"   # Database username
+  DB_NAME: "PLC_COLLECT"        # Database name
+  DB_PASSWORD: "YOUR_PLC_DB_PASSWORD"
+
+hgcdb:
+  DB_HOST: "192.168.x.x"        # HGCDB host IP or hostname
+  DB_PORT: 5432
+  DB_NAME: "hgcdb"
+  DB_USER: "your_hgcdb_user"    # Database username
+  DB_PASSWORD: "YOUR_HGCDB_PASSWORD"
+
+mqtt:
+  MQTT_BROKER: "192.168.x.x"    # MQTT broker IP or hostname
+  MQTT_PORT: 1883
+  MQTT_TOPIC: "plc/s7-1200/temperature"
+  COMMAND_TOPIC: "plc/s7-1200/temperature/command"

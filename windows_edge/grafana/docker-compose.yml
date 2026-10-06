@@ -1,0 +1,21 @@
+# version: "3.9" 
+
+services: 
+  grafana: 
+    image: grafana/grafana-enterprise 
+    container_name: grafana 
+    restart: unless-stopped 
+    environment: 
+      # - GF_SERVER_ROOT_URL=http://my.grafana.server/ 
+      - GF_PLUGINS_PREINSTALL=grafana-clock-panel 
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-TIDC_B205} 
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    ports:  
+      # - "192.168.x.x:3000:3000" 
+      - "3000:3000"
+
+    volumes: 
+      - 'grafana_storage:/var/lib/grafana' 
+
+volumes: 
+  grafana_storage: {}

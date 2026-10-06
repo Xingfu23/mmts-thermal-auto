@@ -1,0 +1,82 @@
+services:
+  # MQTT
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    # user: "root"
+    restart: unless-stopped
+    # command: sh -c "ls -la /mosquitto/config && sleep 3600"
+    ports:
+        - "1883:1883"  # MQTT (unsecured)
+        - "9001:9001"  # MQTT over WebSockets
+    volumes:
+        # - C:/Users/ntuhep_tidc/Desktop/Monitor_system_backup/HGCAL_MMTS_monitor_system_docker/mosquitto/config:/mosquitto/config
+        # - C:/Users/ntuhep_tidc/Desktop/Monitor_system_backup/HGCAL_MMTS_monitor_system_docker/mosquitto/data:/mosquitto/data
+        # - C:/Users/ntuhep_tidc/Desktop/Monitor_system_backup/HGCAL_MMTS_monitor_system_docker/mosquitto/log:/mosquitto/log
+        # - ./mosquitto/config:/mosquitto/config
+        - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+        - ./mosquitto/data:/mosquitto/data
+        - ./mosquitto/log:/mosquitto/log
+  
+  # Database
+  db:
+    image: postgres:17
+    container_name: tidc_b205_postgres
+    restart: always
+    shm_size: 128mb
+    volumes:
+      - tidc_b205_db:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TIMEZONE}
+    ports:
+      - 5432:5432
+  # Database GUI
+  adminer:
+    image: adminer
+    container_name: tidc_b205_adminer
+    restart: always
+    ports:
+      - 8080:8080
+    depends_on:
+      - db
+  
+  # grafana
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_PLUGINS_PREINSTALL=grafana-clock-panel
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER} 
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_storage:/var/lib/grafana
+  
+  mmts_listener:
+    build: 
+      context: ./mmts_listener
+    container_name: mmts_listener
+    restart: unless-stopped
+    depends_on:
+      - mosquitto  # Wait for MQTT service to be ready before starting this script
+    environment:
+      - TZ=${TIMEZONE}
+      - PYTHONUNBUFFERED=1 # Force Python to flush print output immediately (unbuffered stdout)
+    volumes:
+      # Mount host directory into container so YAML changes take effect immediately
+      - ./mmts_listener:/app 
+
+volumes:
+  tidc_b205_db:
+    # external: true  # Using exsist volume
+    name: postgresql_tidc_b205_db
+  grafana_storage:
+    # external: true
+    name: grafana_grafana_storage
+
+ 
