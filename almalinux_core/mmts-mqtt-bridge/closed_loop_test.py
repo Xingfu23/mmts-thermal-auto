@@ -44,7 +44,6 @@ def background_logger(stop_event: threading.Event, db_config_telemetry: dict, db
     """
     print(f"\n[LOGGER] Background logging thread started. Pushing data to hgcdb every 60s.")
     
-    log_timestamp = datetime.now()
 
     # sensor_id to log_location
     device_loc_map = {
@@ -96,9 +95,9 @@ def background_logger(stop_event: threading.Event, db_config_telemetry: dict, db
                     except (TypeError, ValueError):
                         numeric_val = 0.0
 
+                    log_timestamp = datetime.now()
                     cur_hgc.execute(insert_query, (
-                        log_timestamp,     # batch_id
-                        measured_at,
+                        log_timestamp,
                         log_location,
                         sensor_id,
                         numeric_val,
@@ -234,11 +233,15 @@ class GUI_Fetched_Info:
             if 'moduleID' in key and val != ''
         }
         self.active_inspector = fetchedDICT.get('inspector', "no user")
-        self.cycle_count = fetchedDICT.get('cycleCOUNT', 5)
+        self.cycle_count = int( fetchedDICT.get('cycleCOUNT', 5) )
        #self.cycle_count = 5 ### currently it is a constant value
 
         ### example --stations_and_modules='moduleID1L:320ML53WDNT0893,moduleID1C:320ML53WDNT0841,moduleID1R:,moduleID2L:,moduleID2C:,moduleID2R:,moduleID3L:,moduleID3C:,moduleID3R:,moduleID4L:,moduleID4C:,moduleID4R:,moduleID5L:,moduleID5C:,moduleID5R:,moduleID6L:,moduleID6C:,moduleID6R:,moduleID7L:,moduleID7C:,moduleID7R:,moduleID8L:,moduleID8C:,moduleID8R:'
         self.station_and_moduleID = ','.join( [ f'{key}:{val}' for key,val in fetchedDICT.items() if 'moduleID' in key ] )
+    def __str__(self):
+        return str({ k:v for k,v in vars(self).items() if "__" not in k })
+    def __repr__(self):
+        return self.__str__()
         
 def fetch_modules_from_gui(port=5001) -> GUI_Fetched_Info:
     """
@@ -248,13 +251,17 @@ def fetch_modules_from_gui(port=5001) -> GUI_Fetched_Info:
     Returns:
         The module ID string configured by the user.
     """
+    PrintCls.print(f'[INFO] Fetch information from MMTS GUI')
     api_url = f"http://127.0.0.1:{port}/api/get_config"
     try:
         response = requests.get(api_url)
         response.raise_for_status()
         gui_config = response.json()
+
+        fetched_info =  GUI_Fetched_Info(gui_config)
+        PrintCls.print(f'[INFO] Fetch information from MMTS GUI ENDED')
         
-        return GUI_Fetched_Info(gui_config)
+        return fetched_info
     
     except requests.exceptions.RequestException as e:
         PrintCls.print(f"[ERROR] Failed to connect to Flask GUI to retrieve module ID; ensure web server is running on port {port}. ({e})")
@@ -348,11 +355,15 @@ class PrintCls:
     cycle_count = 0
     stations_and_modules = 'moduleID1L:,moduleID1C:,moduleID1R:,moduleID2L:,moduleID2C:,moduleID2R:,moduleID3L:,moduleID3C:,moduleID3R:,moduleID4L:,moduleID4C:,moduleID4R:,moduleID5L:,moduleID5C:,moduleID5R:,moduleID6L:,moduleID6C:,moduleID6R:,moduleID7L:,moduleID7C:,moduleID7R:,moduleID8L:,moduleID8C:,moduleID8R:'
 
+    SHOW_DEBUG_INFO = True
+
     @classmethod
     def print(cls, mesg):
         ''' replacing the print() function. Once the cls instance was setup, also put the message into HGCDB '''
         print(mesg)
+        
         if cls.mmts_base is not None:
+            if '[DEBUG]' in mesg and cls.SHOW_DEBUG_INFO == False: return
             push_message_to_HGCDB(
                 mmtsBASE = cls.mmts_base,
                 mesg = mesg,
@@ -367,6 +378,7 @@ class PrintCls:
 
 
 def main(config_path)->None:
+
     args = arguments()
     config = load_config(config_path)
     batch_id = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -410,10 +422,12 @@ def main(config_path)->None:
 
         fetched_info = fetch_modules_from_gui(port=5001)
 
+        PrintCls.print(f"[DEBUG] accessed information {fetched_info}")
         active_modules = fetched_info.active_modules
         active_inspector = fetched_info.active_inspector
         num_cycles = fetched_info.cycle_count
         set_cycles = fetched_info.cycle_count - 1 ## it should be N-1 for this code
+        PrintCls.print(f'[DEBUG] num_cycles is "{num_cycles}" and set_cycle "{set_cycles}" to 2nd IV code')
         if set_cycles < 1:
             PrintCls.print("[InvalidCycleCount] cycle count '{num_cycles}' is rejected, which is expected in range [2,1000].")
             return
@@ -441,6 +455,11 @@ def main(config_path)->None:
 
         DB_CONFIG = DB_CONFIG_TEL
 
+        current_status = get_system_status(DB_CONFIG)
+        if current_status == 0: ## this is system Alert
+            PrintCls.print(f'[ERROR] System Alert form hardward side. Ex. Door is not locked.   ... abort software.')
+            return
+
         # ---------------------------------------------------------
         # Step 1: Iteration 1, room temperature, high humidity
         # ---------------------------------------------------------
@@ -467,7 +486,7 @@ def main(config_path)->None:
         # ---------------------------------------------------------
         PrintCls.print("\n[INFO] Step 2: Sending command set_A (start cooling)")
         publish.single(COMMAND_TOPIC, payload='set_A', hostname=MQTT_BROKER_IP, port=PORT)
-        
+       
         wait_for_status(4, DB_CONFIG) # Wait for state code becoming 4 (Countdown Cooling)
         PrintCls.print("[INFO] System reached -40°C target state; waiting 600s to ensure thermal equilibrium...")
         time.sleep(600)
