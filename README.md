@@ -143,6 +143,13 @@ mmts-thermal-auto/
 
 ## 🛠️ Installation & Setup Guide
 
+**Multi-Machine Deployment Notice:** 
+This repository is designed to be deployed across **two separate physical machines** connected to the same local area network (LAN):
+1. **Windows PC (`windows_edge/`)**: Connected directly to the Siemens PLC hardware stack.
+2. **AlmaLinux Workstation (`almalinux_core/`)**: Connected to the high-voltage SMU instruments and hosting the MMTS Web GUI.
+ 
+Clone this repository onto both machines and follow the respective setup instructions below.
+
 ### Part 1: Windows Edge Node Setup
 
 #### Prerequisites
@@ -246,6 +253,44 @@ The `windows_edge/docker-compose.yml` configuration automatically builds and orc
      MQTT_TOPIC: "plc/s7-1200/temperature"
      COMMAND_TOPIC: "plc/s7-1200/temperature/command"
    ```
+
+---
+
+## 🗄️ Database Architecture & Schema
+
+This system interacts with two separate PostgreSQL databases over the local network:
+
+### 1. Edge Telemetry Database (`PLC_COLLECT` on Windows Edge)
+When launching the Docker stack for the first time, `windows_edge/init_db.sql` is automatically executed (via Docker volume mount to `/docker-entrypoint-initdb.d/`) to initialize the schema:
+* **`detector` (Table)**: Registers active hardware sensors (`RTD-01` to `RTD-08`, `RTD-A01`, `RTD-A02`, `DMT-01`, `DMT-02`, Chiller parameters, and `System Status`).
+* **`measurement` (Table)**: Time-series table storing raw sensor readings (`sensor_id`, `metric`, `value`, `measured_at`).
+* **`avg1m_air_humidity` (View)**: Computes 1-minute rolling averages of ambient air temperature (`avg_air_temp_c`), dew point (`avg_dewpoint_c`), and derived relative humidity (`avg_air_rh_pct`).
+
+### System Status Codes
+
+The script uses the same status coding system as the telemetry pipeline (`plc_to_db.py`). Running the script without arguments will display the current operational state:
+
+| Code | Status | Description |
+| :---: | :--- | :--- |
+| `0` | **System Alert** | The chamber door is open or a safety interlock is triggered. Check hardware. |
+| `1` | **Standby** | System is idle and ready for commands. |
+| `2` | **Countdown (Warming)** | Waiting for the programmed delay before the warming stage. |
+| `3` | **Warming Up** | Chiller is actively increasing the temperature. |
+| `4` | **Countdown (Cooling)** | Waiting for the programmed delay before the cooling stage. |
+| `5` | **Cooling Down** | Chiller is actively decreasing the temperature. |
+
+### 2. Central Experiment Database (`hgcdb` on LAN)
+During thermal cycling, the AlmaLinux background logger queries the latest snapshot from `PLC_COLLECT` every 60 seconds and inserts records into the `mmts_sensors_logging` table in `hgcdb`:
+
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `log_no` | `integer [PK]` | Auto-incrementing primary key |
+| `log_timestamp` | `timestamp` | Test batch identifier timestamp (maps to `batch_id`) |
+| `timestamp_utc` | `timestamptz` | Exact measurement timestamp from the edge DB |
+| `log_location` | `text` | Mapped sensor location index (`"1"` to `"16"`, or `NULL`) |
+| `device_name` | `text` | Sensor ID (e.g., `RTD-01`, `DMT-01`, `System Status`) |
+| `value` | `numeric(6,2)` | Recorded physical value |
+| `metric` | `text` | Measurement type (e.g., `temperature_C`, `dewpoint_C`) |
 
 ---
 
