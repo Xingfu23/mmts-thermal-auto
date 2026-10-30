@@ -9,6 +9,7 @@ from datetime import datetime
 import subprocess
 import requests
 import threading
+import pytz
 
 def arguments():
     def safe_path(value):
@@ -96,8 +97,10 @@ def background_logger(stop_event: threading.Event, db_config_telemetry: dict, db
                         numeric_val = 0.0
 
                     log_timestamp = datetime.now()
+                    utc_time = log_timestamp.astimezone(pytz.utc)
                     cur_hgc.execute(insert_query, (
                         log_timestamp,
+                        utc_time,
                         log_location,
                         sensor_id,
                         numeric_val,
@@ -110,6 +113,7 @@ def background_logger(stop_event: threading.Event, db_config_telemetry: dict, db
 
         except Exception as e:
             print(f"\n[LOGGER_WARNING] Failed to push data to hgcdb: {e}")
+            conn_tel = None ## move original objec to trash
 
         stop_event.wait(60)
 
@@ -160,9 +164,10 @@ def get_current_temperature(db_config: dict) -> float:
     try:
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
+
         query = """
-            SELECT avg_air_temp_c 
-            FROM avg1m_air_humidity 
+            SELECT avg_temp_c 
+            FROM avg1m_temperature 
             ORDER BY bucket_min DESC 
             LIMIT 1;
         """
@@ -226,6 +231,47 @@ def wait_for_temperature(target_temp: float, db_config: dict, check_interval=30)
                 
         time.sleep(check_interval)
 
+def wait_for_safe_dewpoint(target_dewpoint: float, db_config: dict, check_interval=30):
+    """
+    Ensure chamber dew point reaches safe limit via continuous polling before commanding chiller cooldown; enforce data staleness check to only trust telemetry updated within the last 3 minutes.
+    """
+    PrintCls.print(f"\n[INFO] Waiting for chamber to purge. Target safe dew point: <= {target_dewpoint}°C...")
+    while True:
+        try:
+            conn = psycopg2.connect(**db_config)
+            cur = conn.cursor()
+            # Compute data age in seconds directly in PostgreSQL
+            query = """
+                SELECT avg_dewpoint_c, EXTRACT(EPOCH FROM (now() - bucket_min)) AS age_seconds 
+                FROM avg1m_dewpoint 
+                ORDER BY bucket_min DESC 
+                LIMIT 1;
+            """
+            cur.execute(query)
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+
+            if result and result[0] is not None:
+                current_dp = float(result[0])
+                age_seconds = float(result[1])
+
+                if age_seconds > 180:
+                    print(f"[WARNING] DB data is STALE (last updated {age_seconds:.0f}s ago). Check telemetry! Waiting...", end="\r", flush=True)
+                else:
+                    if current_dp <= target_dewpoint:
+                        PrintCls.print(f"\n[INFO] Safe dew point reached ({current_dp:.2f}°C)! Proceeding to cooling.")
+                        break
+                    else:
+                        print(f"[INFO] Current DB dew point: {current_dp:.2f}°C, waiting for dry air...", end="\r", flush=True)
+            else:
+                print(f"[INFO] No dew point data found, waiting...", end="\r", flush=True)
+        
+        except Exception as e:
+            pass
+        
+        time.sleep(check_interval)
+
 class GUI_Fetched_Info:
     def __init__(self, fetchedDICT:dict):
         self.active_modules = {
@@ -234,7 +280,6 @@ class GUI_Fetched_Info:
         }
         self.active_inspector = fetchedDICT.get('inspector', "no user")
         self.cycle_count = int( fetchedDICT.get('cycleCOUNT', 5) )
-       #self.cycle_count = 5 ### currently it is a constant value
 
         ### example --stations_and_modules='moduleID1L:320ML53WDNT0893,moduleID1C:320ML53WDNT0841,moduleID1R:,moduleID2L:,moduleID2C:,moduleID2R:,moduleID3L:,moduleID3C:,moduleID3R:,moduleID4L:,moduleID4C:,moduleID4R:,moduleID5L:,moduleID5C:,moduleID5R:,moduleID6L:,moduleID6C:,moduleID6R:,moduleID7L:,moduleID7C:,moduleID7R:,moduleID8L:,moduleID8C:,moduleID8R:'
         self.station_and_moduleID = ','.join( [ f'{key}:{val}' for key,val in fetchedDICT.items() if 'moduleID' in key ] )
@@ -270,6 +315,8 @@ def fetch_modules_from_gui(port=5001) -> GUI_Fetched_Info:
 def run_iv_curve_test(batch_id, modules_dict, iteration, target_temp, db_config, max_voltage=500, inspector='no user', mmtsGUIpath='', nCYCLE = 5)->bool:
     """
     Trigger I-V curve scan locally on AlmaLinux and block until complete
+
+    nCYCLE means current cycle count. Do not put expected maximum cycle number.
     """
     # batch_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     current_humidity = get_current_humidity(db_config)
@@ -473,7 +520,7 @@ def main(config_path)->None:
             target_temp=20,
             inspector = active_inspector,
             mmtsGUIpath = args.mmts_gui_path,
-            nCYCLE = num_cycles,
+            nCYCLE = PrintCls.cycle_count,
         )
         if not success:
             PrintCls.print("[ERROR] Iteration 1 measurement failed, terminating workflow!")
@@ -485,6 +532,7 @@ def main(config_path)->None:
         # Step 2: Cooling down to -40°C
         # ---------------------------------------------------------
         PrintCls.print("\n[INFO] Step 2: Sending command set_A (start cooling)")
+        wait_for_safe_dewpoint(-40, DB_CONFIG)
         publish.single(COMMAND_TOPIC, payload='set_A', hostname=MQTT_BROKER_IP, port=PORT)
        
         wait_for_status(4, DB_CONFIG) # Wait for state code becoming 4 (Countdown Cooling)
@@ -504,7 +552,7 @@ def main(config_path)->None:
             target_temp=-40,
             inspector = active_inspector,
             mmtsGUIpath = args.mmts_gui_path,
-            nCYCLE = num_cycles,
+            nCYCLE = PrintCls.cycle_count,
         )
 
         if not success:
@@ -551,7 +599,7 @@ def main(config_path)->None:
             max_voltage=850,
             inspector = active_inspector,
             mmtsGUIpath = args.mmts_gui_path,
-            nCYCLE = num_cycles,
+            nCYCLE = PrintCls.cycle_count,
         )
         if not success:
             PrintCls.print("[ERROR] Step 6 measurement failed, executing emergency abort sequence!")
@@ -585,7 +633,7 @@ def main(config_path)->None:
             max_voltage=850,
             inspector = active_inspector,
             mmtsGUIpath = args.mmts_gui_path,
-            nCYCLE = num_cycles,
+            nCYCLE = PrintCls.cycle_count,
         )
 
         PrintCls.print("\n[INFO] Test completed successfully; data saved, system safely returned to Standby.")
