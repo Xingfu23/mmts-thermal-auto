@@ -128,8 +128,15 @@ def main():
             if status_code != 1:
                 print(f"Warning: System is not in standby mode (Code: {status_code}). Operation terminated.")
                 return
-            if low_temp_target < current_dewpoint - 10.0:
-                print(f"Warning: The target low temperature ({low_temp_target}℃) is significantly lower than the current average dew point ({current_dewpoint:.2f}℃). Operation terminated.")
+            '''
+            Software interlock check: Relax the margin between target temperature
+            and current dew point, accounting for continuous dry air purging (dynamic purging).
+            '''
+            dewpoint_margin = 25.0
+            if low_temp_target < current_dewpoint - dewpoint_margin:
+                print(f"Warning: The target low temperature ({low_temp_target}℃) is significantly lower "
+                      f"than the current average dew point ({current_dewpoint:.2f}℃) even with a {dewpoint_margin}℃ dynamic margin.")
+                print("Operation terminated. Please ensure the dry air supply is active and wait for further purging.")
                 return
             
             print(f"=== Sending command, try {retry + 1}/{max_retries} ===")
