@@ -27,14 +27,14 @@ graph TD
         SM["closed_loop_test.py<br/>(State Machine Orchestrator)"]
         IV["I-V Measurement Routine<br/>(make -f makefile_task3 run)"]
         
-        GUI -->|Fetch Config / Trigger Test| SM
-        SM -->|Local Call| IV
+        GUI -->|"Fetch Config / Trigger Test"| SM
+        SM -->|"Local Call"| IV
     end
 
     HGCDB[("Central hgcdb PostgreSQL<br/>mmts_sensors_logging")]
     
-    IV -->|Write Electrical Data| HGCDB
-    SM -->|Background 60s Telemetry Snapshot| HGCDB
+    IV -->|"Write Electrical Data"| HGCDB
+    SM -->|"Background 60s Telemetry Snapshot"| HGCDB
 
     subgraph Windows ["Windows Edge Node (Docker Stack)"]
         WinBroker["Mosquitto MQTT Broker (:1883)"]
@@ -43,9 +43,9 @@ graph TD
         WinDB[("Edge Telemetry PostgreSQL (:5432)<br/>PLC_COLLECT")]
         Grafana["Grafana Dashboard (:3000)"]
 
-        WinBroker <-->|Commands & Dispatch| Listener
+        WinBroker <-->|"Commands & Dispatch"| Listener
         Logger <-->|"1. Publish Telemetry<br/>2. Broadcast Triggers"| WinBroker
-        Logger -->|Worker Pool Write| WinDB
+        Logger -->|"Worker Pool Write"| WinDB
         WinDB --> Grafana
     end
 
@@ -56,16 +56,16 @@ graph TD
         SMU["Keithley 2400 / Vitrek 964i"]
         Module["Detector Modules"]
         
-        PLC -->|Analog Output & Relays| Chiller
-        Sensors -->|Sensor Readings| PLC
-        SMU <-->|High Voltage Scan| Module
+        PLC -->|"Analog Output & Relays"| Chiller
+        Sensors -->|"Sensor Readings"| PLC
+        SMU <-->|"High Voltage Scan"| Module
     end
 
     SM <-->|"LAN MQTT (1883)<br/>Publish Commands / Poll State"| WinBroker
-    SM -.->|Poll System State & Avg Temp| WinDB
-    Listener <-->|snap7 / HMI Button Simulation| PLC
-    PLC -.->|DB15 Polling (20s)| Logger
-    IV <-->|USB-Serial / VISA| SMU
+    SM -.->|"Poll System State & Avg Temp"| WinDB
+    Listener <-->|"snap7 / HMI Button Simulation"| PLC
+    PLC -.->|"DB15 Polling (20s)"| Logger
+    IV <-->|"USB-Serial / VISA"| SMU
 ```
 
 ---
