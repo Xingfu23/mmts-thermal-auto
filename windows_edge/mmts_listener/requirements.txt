@@ -1,4 +1,15 @@
-numpy
+# --- PLC Communication ---
 python-snap7
-PyYAML
+
+# --- MQTT Communication ---
 paho-mqtt
+
+# --- Configuration parsing ---
+PyYAML
+
+# --- Database ---
+psycopg2-binary
+
+# --- Task Scheduling & Timezone (for plc_to_db.py) ---
+schedule
+pytz

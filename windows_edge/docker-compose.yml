@@ -70,6 +70,21 @@ services:
     volumes:
       # Mount host directory into container so YAML changes take effect immediately
       - ./mmts_listener:/app 
+  
+  plc_telemetry_logger:
+    build: 
+      context: ./mmts_listener
+    container_name: plc_telemetry_logger
+    command: python plc_to_db.py
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+      - db
+    environment:
+      - TZ=${TIMEZONE}
+      - PYTHONUNBUFFERED=1 
+    volumes:
+      - ./mmts_listener:/app
 
 volumes:
   tidc_b205_db:

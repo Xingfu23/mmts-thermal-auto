@@ -17,7 +17,7 @@ During quality assurance (QA), silicon sensor modules must undergo rigorous ther
 
 To overcome the limitations of legacy single-machine prototypes (which required manual human intervention during I-V measurements and bypassed PLC safety interlocks), this project implements a **Distributed IoT Microservices Architecture**:
 * **AlmaLinux Core (`almalinux_core`)**: The central command brain that coordinates test workflows, triggers I-V measurements, monitors thermal states, and archives telemetry snapshots to the main experiment database (`hgcdb`).
-* **Windows Edge (`windows_edge`)**: The hardware interface node managing the environmental chamber and chiller via a Siemens S7-1200 PLC, running containerized edge microservices via Docker Compose (Mosquitto MQTT, PostgreSQL, Adminer, Grafana, and the MMTS Listener).
+* **Windows Edge (`windows_edge`)**: The hardware interface node managing the environmental chamber and chiller via a Siemens S7-1200 PLC, running containerized edge microservices via Docker Compose (Mosquitto MQTT, PostgreSQL, Adminer, Grafana, the MMTS Listener, and the PLC Telemetry Logger).
 * **MMTS Web GUI Companion**: Module configurations, user inspection metadata, and test parameters are managed via the web interface hosted in [MultiModuleTeststandUI](https://github.com/ltsai323/MultiModuleTeststandUI).
 
 ```mermaid
@@ -39,11 +39,13 @@ graph TD
     subgraph Windows ["Windows Edge Node (Docker Stack)"]
         WinBroker["Mosquitto MQTT Broker (:1883)"]
         Listener["mmts_listener (Container)<br/>mqtt_listener.py & control_hmi.py"]
+        Logger["plc_telemetry_logger (Container)<br/>plc_to_db.py (Snap7 Ingestion)"]
         WinDB[("Edge Telemetry PostgreSQL (:5432)<br/>PLC_COLLECT")]
         Grafana["Grafana Dashboard (:3000)"]
 
-        WinBroker <-->|Commands & State| Listener
-        Listener -->|Record Telemetry| WinDB
+        WinBroker <-->|Commands & Dispatch| Listener
+        Logger <-->|"1. Publish Telemetry<br/>2. Broadcast Triggers"| WinBroker
+        Logger -->|Worker Pool Write| WinDB
         WinDB --> Grafana
     end
 
@@ -61,7 +63,8 @@ graph TD
 
     SM <-->|"LAN MQTT (1883)<br/>Publish Commands / Poll State"| WinBroker
     SM -.->|Poll System State & Avg Temp| WinDB
-    Listener <-->|snap7 / S7 Comm| PLC
+    Listener <-->|snap7 / HMI Button Simulation| PLC
+    PLC -.->|DB15 Polling (20s)| Logger
     IV <-->|USB-Serial / VISA| SMU
 ```
 
@@ -100,8 +103,13 @@ The main orchestrator (`closed_loop_test.py`) executes a 9-step automated state 
   3. Gracefully stops the background database logging thread.
 
 ### 5. Real-Time Telemetry & Data Lineage
-* **Background Logger Thread**: Runs asynchronously every 60 seconds during thermal tests, querying recent sensor snapshots (RTD temperature sensors, DMT dew point sensors, Chiller status) and writing directly to the central `hgcdb` database (`mmts_sensors_logging`), tying environmental conditions to the corresponding test `batch_id`.
-* **Edge Monitoring**: Edge metrics are recorded in PostgreSQL and rendered live on Grafana.
+* **Automated Continuous Telemetry Ingestion (`plc_to_db.py` / `plc_telemetry_logger`)**:
+  * Periodically polls the Siemens S7-1200 PLC DB15 block every 20 seconds (`:00`, `:20`, `:40`) via `snap7`, acquiring 8 PT1000 RTD sensor temperatures (`RTD-01` to `RTD-08`), 2 Vaisala DMT dew point measurements (`DMT-01`, `DMT-02`), 3 Chiller temperature metrics, and chamber door/system operational state codes.
+  * **Dew Point Scaling Correction**: Automatically scales raw Vaisala dew point sensor measurements ($T_{\text{real}} = 1.25 \times T_{\text{plc}} - 5$) to compensate for the PLC analog module current range configuration offset (0–20mA vs. 4–20mA).
+  * **High-Throughput Concurrent Logging**: Employs an internal thread-safe queue and a PostgreSQL connection pool with 8 background worker threads (`db_worker`), parsing ISO timestamps to UTC and writing raw telemetry directly into `PLC_COLLECT.measurement`.
+  * **Inter-Device Triggering & Warnings**: Publishes telemetry payloads to `plc/s7-1200/temperature`, broadcasts acquisition triggers (`{"cmd": "READ", ...}`) to auxiliary sensors (e.g., Raspberry Pi 5 reading `RTD-A01`, `RTD-A02`), and listens for hardware anomaly warnings.
+* **Live Environmental Dashboarding**: Edge telemetry stored in PostgreSQL feeds directly into Grafana for real-time visualization of cooling curves, temperature distributions, and dew point margins.
+* **Central Experiment Database Synchronization**: The AlmaLinux orchestrator runs a background thread every 60 seconds during thermal cycles, querying telemetry snapshots from the edge database and logging them into `hgcdb.mmts_sensors_logging`, linking environmental conditions with module test `batch_id`.
 
 ---
 
@@ -123,12 +131,13 @@ mmts-thermal-auto/
 │           └── test_chiller_control.py # Test chiller start/stop signals
 │
 ├── windows_edge/                   # Hardware Edge Services (Windows + Docker)
-│   ├── docker-compose.yml          # Builds & runs all 5 edge containers
+│   ├── docker-compose.yml          # Builds & runs all 6 edge containers
 │   ├── .env.example                # Example environment variables template
 │   ├── init_db.sql                 # Telemetry database initialization script
-│   └── mmts_listener/              # Edge listener microservice (built by Docker)
-│       ├── Dockerfile              # Dockerfile for mmts_listener container
-│       ├── requirements.txt        # Listener Python dependencies
+│   └── mmts_listener/              # Edge listener & logger microservices (built by Docker)
+│       ├── Dockerfile              # Dockerfile for mmts_listener & plc_telemetry_logger
+│       ├── requirements.txt        # Listener & telemetry Python dependencies
+│       ├── plc_to_db.py            # Continuous PLC telemetry polling, dew point correction, & PostgreSQL logger
 │       ├── mqtt_listener.py        # MQTT listener & task dispatcher
 │       ├── control_hmi.py          # PLC HMI button simulation via snap7
 │       ├── config_generater.py     # Dynamic multi-cycle YAML generator
@@ -158,12 +167,13 @@ Clone this repository onto both machines and follow the respective setup instruc
 * **Additional Ambient Sensors**: In addition to the 8 PT1000 sensors connected to the PLC analog module, two supplementary RTD PT1000 sensors (`RTD-A01`, `RTD-A02`) connected to a Raspberry Pi 5 can be deployed inside the chamber to measure ambient air temperature and determine relative humidity via an MQTT publisher. If these two sensors are absent, the system falls back to using the temperature sensors from the 1st and 2nd module layers.
 
 #### Container Stack Created by `docker-compose.yml`
-The `windows_edge/docker-compose.yml` configuration automatically builds and orchestrates **five core services**:
+The `windows_edge/docker-compose.yml` configuration automatically builds and orchestrates **six core services**:
 1. **`mosquitto`**: Eclipse Mosquitto MQTT message broker on ports `1883` (TCP) and `9001` (WebSockets).
 2. **`db`**: PostgreSQL 17 time-series database storing sensor telemetry.
 3. **`adminer`**: Lightweight web-based database management interface on port `8080`.
 4. **`grafana`**: Environmental telemetry dashboard on port `3000`.
 5. **`mmts_listener`**: The edge control microservice, **automatically built from `./mmts_listener/Dockerfile`**. It waits for the MQTT broker, listens for commands (`set_A`, `set_B`, `set_S`, `nCYC_<N>`), and translates them into Siemens S7-1200 PLC actions via `snap7`.
+6. **`plc_telemetry_logger`**: The dedicated telemetry acquisition microservice, built from `./mmts_listener/Dockerfile` and executing `plc_to_db.py`. It polls the Siemens S7-1200 PLC DB15 block every 20 seconds, applies Vaisala dew point scaling corrections, logs time-series data into PostgreSQL via worker thread connection pools, publishes telemetry to MQTT, and issues trigger commands to auxiliary sensor nodes.
 
 #### Setup Steps
 1. Navigate to the edge directory:
@@ -193,17 +203,39 @@ The `windows_edge/docker-compose.yml` configuration automatically builds and orc
    ```
    > **Note**: The `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` values configured here must match the `database` section in AlmaLinux's `gateway_setting.yml` so the core orchestrator can query sensor data and system states.
 
-3. Build and launch all five containers:
+3. Build and launch all six containers:
 
    ```cmd
    docker compose up -d --build
    ```
-4. Verify the running services:
+
+4. Verify container status and running services:
+   Check whether all six containers are running and healthy:
+   ```cmd
+   docker compose ps
+   ```
+   *Expected services and endpoints:*
    * **Mosquitto MQTT**: `localhost:1883` (WebSockets: `9001`)
    * **PostgreSQL Telemetry DB**: `localhost:5432`
    * **Adminer Web DB Manager**: `http://localhost:8080`
    * **Grafana Dashboard**: `http://localhost:3000`
-   * **MMTS Listener**: Active in the background, listening on `plc/s7-1200/temperature/command`.
+   * **MMTS Listener (`mmts_listener`)**: Active in the background, listening on `plc/s7-1200/temperature/command`.
+   * **PLC Telemetry Logger (`plc_telemetry_logger`)**: Active in the background, continuously polling sensors every 20 seconds and inserting telemetry records into PostgreSQL.
+
+5. Monitor microservice logs:
+   Inspect live operational logs to ensure successful connection with the Siemens PLC, MQTT broker, and PostgreSQL database:
+   * **Monitor the MQTT command listener (`mmts_listener`)**:
+     ```cmd
+     docker compose logs -f mmts_listener
+     ```
+   * **Monitor the PLC telemetry & database ingestion logger (`plc_telemetry_logger`)**:
+     ```cmd
+     docker compose logs -f plc_telemetry_logger
+     ```
+   * *(Optional) Monitor both services simultaneously:*
+     ```cmd
+     docker compose logs -f mmts_listener plc_telemetry_logger
+     ```
 
 ---
 
