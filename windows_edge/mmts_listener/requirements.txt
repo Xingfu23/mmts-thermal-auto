@@ -13,3 +13,6 @@ psycopg2-binary
 # --- Task Scheduling & Timezone (for plc_to_db.py) ---
 schedule
 pytz
+
+# --- Math / Array operations (for plc_io.py) ---
+numpy
